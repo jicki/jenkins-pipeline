@@ -1,0 +1,91 @@
+FROM frolvlad/alpine-java
+
+ENV GRADLE_VERSION=5.4.1 \
+    GRADLE_HOME=/opt/gradle \
+    GRADLE_FOLDER=/root/.gradle \
+    DOCKER_CHANNEL=stable \
+    DOCKER_VERSION=18.09.6 \
+    HOME=/home/jenkins
+
+USER root
+
+# Change to tmp folder
+WORKDIR /tmp
+
+# Download and extract gradle to opt folder
+RUN wget https://downloads.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip \
+    && unzip gradle-${GRADLE_VERSION}-bin.zip -d /opt \
+    && ln -s /opt/gradle-${GRADLE_VERSION} /opt/gradle \
+    && rm -f gradle-${GRADLE_VERSION}-bin.zip \
+    && ln -s /opt/gradle/bin/gradle /usr/bin/gradle \
+    && apk add --no-cache libstdc++ git libltdl wget \
+    ca-certificates \
+    && echo 'hosts: files dns' > /etc/nsswitch.conf \
+    && mkdir -p $GRADLE_FOLDER \
+    && addgroup -S -g 10000 jenkins \
+    && adduser -D -S -G jenkins -u 10000 jenkins
+
+LABEL Description="This is a base image, which provides the Jenkins agent executable (slave.jar)" Vendor="Jenkins project" Version="3.19"
+ARG VERSION=3.19
+ARG AGENT_WORKDIR=/home/jenkins/agent
+
+RUN apk add --no-cache --virtual .build-deps \
+    curl
+
+RUN curl --create-dirs -sSLo /usr/share/jenkins/slave.jar https://repo.jenkins-ci.org/public/org/jenkins-ci/main/remoting/${VERSION}/remoting-${VERSION}.jar \
+  && chmod 755 /usr/share/jenkins \
+  && chmod 644 /usr/share/jenkins/slave.jar \
+  && apk del .build-deps
+
+ENV AGENT_WORKDIR=${AGENT_WORKDIR}
+RUN mkdir /home/jenkins/.jenkins && mkdir -p ${AGENT_WORKDIR}
+
+# Mark as volume
+VOLUME  $GRADLE_FOLDER
+VOLUME /home/jenkins/.jenkins
+VOLUME ${AGENT_WORKDIR}
+
+RUN set -eux; \
+	\
+# this "case" statement is generated via "update.sh"
+	apkArch="$(apk --print-arch)"; \
+	case "$apkArch" in \
+# amd64
+		x86_64) dockerArch='x86_64' ;; \
+# arm32v6
+		armhf) dockerArch='armel' ;; \
+# arm32v7
+		armv7) dockerArch='armhf' ;; \
+# arm64v8
+		aarch64) dockerArch='aarch64' ;; \
+		*) echo >&2 "error: unsupported architecture ($apkArch)"; exit 1 ;;\
+	esac; \
+	\
+	if ! wget -O docker.tgz "https://download.docker.com/linux/static/${DOCKER_CHANNEL}/${dockerArch}/docker-${DOCKER_VERSION}.tgz"; then \
+		echo >&2 "error: failed to download 'docker-${DOCKER_VERSION}' from '${DOCKER_CHANNEL}' for '${dockerArch}'"; \
+		exit 1; \
+	fi; \
+	\
+	tar --extract \
+		--file docker.tgz \
+		--strip-components 1 \
+		--directory /usr/local/bin/ \
+	; \
+	rm docker.tgz; \
+	\
+	dockerd --version; \
+	docker --version
+
+# Down Docker File
+RUN wget https://raw.githubusercontent.com/docker-library/docker/cdcff675cecbae122cbae49ed6e17fa78bb6116a/18.09/modprobe.sh  -O /usr/local/bin/modprobe
+RUN wget https://raw.githubusercontent.com/docker-library/docker/cdcff675cecbae122cbae49ed6e17fa78bb6116a/18.09/docker-entrypoint.sh -O /usr/local/bin/docker-entrypoint.sh
+
+# Down jenkins-slave file
+RUN wget https://raw.githubusercontent.com/jenkinsci/docker-jnlp-slave/master/jenkins-slave -O /usr/local/bin/jenkins-slave
+
+# Chomd
+RUN chmod +x /usr/local/bin/jenkins-slave \
+    && chmod +x /usr/local/bin/modprobe \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENTRYPOINT ["jenkins-slave"]
